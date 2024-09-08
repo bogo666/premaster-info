@@ -419,7 +419,11 @@ sub convert_audio_file {
 
     my (@exec_args) = @_;
 
-    system(@exec_args);
+    ## no critic (InputOutput::ProhibitBacktickOperators)
+    my $output = qx/@exec_args 2>&1/;
+    ## use critic
+
+    print "OUTPUT: $output\n";    # TEMP
 
     if ( $CHILD_ERROR == -1 ) {
         exit_with_error("failed to execute afconvert: $!");
@@ -432,6 +436,7 @@ sub convert_audio_file {
     else {
         my $child_exit_status = $CHILD_ERROR >> 8;
         if ( $child_exit_status != 0 ) {
+            print "output\n";
             my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
             exit_with_error($msg);
         }
@@ -785,10 +790,13 @@ sub copy_peak_audio {
     my $end_time   = format_hhmmss( $args->{position}, 1 );
 
     my @exec_args = ( 'sox', $args->{src}, $args->{dst}, 'trim', $start_time, "=$end_time", );
+    print "exec args: @exec_args\n";              # TEMP
 
     ## no critic (InputOutput::ProhibitBacktickOperators)
     my $copy_info = qx/@exec_args 2>&1/;
     ## use critic
+
+    print "COPY_INFO: $copy_info\n";              # TEMP
 
     if ( $CHILD_ERROR == -1 ) {
         exit_with_error("failed to execute sox: $!");
