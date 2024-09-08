@@ -15,11 +15,12 @@ the same terms as the Perl 5 programming language system itself.
 
 ## Example Output
 
-```
+```text
 $ ./premaster-info some_premaster.wav 
 Sound Check Info for somme_premaster.wav
 ========================================
 
+Approx Length:        00h:02m:50.88s
 Bit Depth:            24
 Sample Rate:          48 kbps
 iLUFS:                -14.3081
@@ -27,8 +28,9 @@ Max Short-term LUFS:  -10.7634
 Loudness Range:       8.4
 True Peak:            -0.161641
 Crest Factor:         -14.146459
-                   Left           Right
-Noise Floor:       -129.15        -129.03
-Peak Location:     96.00 s        82.09 s
-Max Power Loc:     43.20 s        43.20 s
+Max Momentary LUFS:   -8.95639
+                   Left               Right
+Noise Floor:       -129.15            -129.03
+Peak Location:     00h:01m:36.00s     00h:01m:22.09s
+Max Power Loc:     00h:00m:43.20s     00h:00m:43.20s
 ```
