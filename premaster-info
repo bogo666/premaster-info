@@ -1,0 +1,524 @@
+#!/usr/bin/env perl
+
+# premaster-info.pl script.
+#
+# Using the Apple Digital Masters tools afconvert & afinfo,
+# produce Apple Music "sound check" info and convert the output
+# into a summary useful for Audio Mastering Engineers, including:
+# crest factor, loudness increase target, loudness range, and L & R
+# peak locations in seconds.
+#
+# Info about Apple Digital Masters is available here:
+#     https://www.apple.com/apple-music/apple-digital-masters/
+
+# Copyright (c) 2024 Chris Foote.
+#
+# This is free software; you can redistribute it and/or modify it under
+# the same terms as the Perl 5 programming language system itself.
+
+use strict;
+use warnings;
+use English qw( -no_match_vars );
+
+# We restrict ourselves to only using core modules included
+# with the MacOS Perl distribution. No CPAN allowed to keep
+# this script dependency free!
+
+use Data::Dumper qw(Dumper);
+
+#
+# Constants
+#
+our $VERSION = '0.1';
+my $SHORT_LUFS_GOAL = -10.0;
+
+#
+# Globals
+#
+my %gTEMP = (
+    tempdir     => undef,
+    tempfile    => undef,
+    cleanup_dir => 0,
+);
+
+MAIN: {
+    my $params = process_args(@ARGV);
+
+    if ( $params->{help} || $params->{empty_args} ) {
+        exit_help();
+    }
+    elsif ( $params->{test} ) {
+        run_test_suite();
+    }
+
+    abort_if_root();
+
+    umask(0077);    # When creating files and directories, make them accessible to the owner only.
+
+    setup_tempdir();
+    check_source_file( $params->{wavfile} );
+
+    my @exec_args
+        = ( 'afconvert', $params->{wavfile}, $gTEMP{tempfile}, '-d', '0', '-f', 'caff', '--soundcheck-generate', );
+
+    convert_audio_file(@exec_args);
+
+    @exec_args = ( 'afinfo', $gTEMP{tempfile} );
+
+    my $soundcheck_info = get_soundcheck_info(@exec_args);
+    verify_2channels($soundcheck_info);
+    my $mastering_info = summarize_soundcheck_info($soundcheck_info);
+    add_mastering_calculations($mastering_info);
+    print_mastering_summary( $mastering_info, $params->{wavfile} );
+}
+
+END {
+    # Remove tempfile if needed.
+    if ( $gTEMP{tempfile} && -e $gTEMP{tempfile} && -f $gTEMP{tempfile} ) {
+        if ( !unlink( $gTEMP{tempfile} ) ) {
+            ## no critic (ErrorHandling::RequireCarping)
+            die "Unable to remove tempfile $gTEMP{tempfile}: $!";
+            ## use critic
+        }
+    }
+
+    # Remove tempdir if needed.
+    if ( $gTEMP{cleanup_dir} && $gTEMP{tempdir} && -d $gTEMP{tempdir} ) {
+        if ( !rmdir( $gTEMP{tempdir} ) ) {
+            ## no critic (ErrorHandling::RequireCarping)
+            die "Unable to remove tempdir $gTEMP{tempdir}: $!";
+            ## use critic
+        }
+    }
+}
+
+sub setup_tempdir {
+
+    SETUP_TEMPDIR: {
+
+        if ( exists $ENV{TMPDIR} && $ENV{TMPDIR} && -d $ENV{TMPDIR} && -w $ENV{TMPDIR} ) {
+            $gTEMP{tempdir} = $ENV{TMPDIR};
+        }
+        elsif ( -d '/var/tmp' && -w '/var/tmp' ) {
+            my $rand_num = int( rand( 2**32 ) );
+            my $tempdir  = "/var/tmp/tmpdir.premaster-info.$rand_num";
+            if ( !mkdir( $tempdir, 0700 ) ) {
+                exit_with_error("Unable to create temporary directory $tempdir: $!");
+            }
+            $gTEMP{tempdir}     = $tempdir;
+            $gTEMP{cleanup_dir} = 1;
+        }
+        elsif ( -d '/tmp' && -w '/tmp' ) {
+            my $rand_num = int( rand( 2**32 ) );
+            my $tempdir  = "/tmp/tmpdir.premaster-info.$rand_num";
+            if ( !mkdir( $tempdir, 0700 ) ) {
+                exit_with_error("Unable to create temporary directory $tempdir: $!");
+            }
+            $gTEMP{tempdir}     = $tempdir;
+            $gTEMP{cleanup_dir} = 1;
+        }
+        else {
+            exit_with_error("Unable to create temporary directory.");
+        }
+    }
+
+    SETUP_TEMPFILE: {
+
+        my $rand_num = int( rand( 2**32 ) );
+        $gTEMP{tempfile} = $gTEMP{tempdir} . "/tmpfile.premaster-info.$rand_num.caf";
+    }
+
+    return;
+}
+
+sub abort_if_root {
+
+    if ( $UID == 0 || $EUID == 0 ) {
+        exit_with_error("Cannot run this program as the root user.");
+    }
+
+    return;
+}
+
+sub exit_help {
+
+    print "$PROGRAM_NAME version $VERSION\n\n";
+    print "Usage:\n";
+    print "\t$PROGRAM_NAME [-h -t] wav_filepath\n\n";
+    print "where options are:\n";
+    print "-h: print this Help text and exit\n";
+    print "-t: run the internal test suite and exit\n";
+    exit(0);
+}
+
+sub run_test_suite {
+
+    print "running test suite\n";
+    exit(0);
+}
+
+sub process_args {
+
+    my (@args) = @_;
+    my $params = {
+        empty_args => 0,
+        help       => 0,
+        test       => 0,
+        wavfile    => undef,
+    };
+
+    if ( @args == 0 ) {
+        $params->{empty_args} = 1;
+        return $params;
+    }
+
+    my $index    = 0;
+    my $finished = 0;
+
+    EACH_ARG:
+    while ( !$finished ) {
+
+        my $arg = shift @args;
+
+        ## no critic (RegularExpressions::RequireExtendedFormatting)
+        if ( $arg =~ /^-h$/ ) {
+            $params->{help} = 1;
+            last EACH_ARG;
+        }
+        elsif ( $arg =~ /^-t$/ ) {
+            $params->{test} = 1;
+            last EACH_ARG;
+        }
+        else {
+            $params->{wavfile} = $arg;
+        }
+        ## use critic
+
+        $index++;
+        if ( defined $params->{wavfile} && @args > 0 ) {
+            exit_with_error("Too many parameters.");
+        }
+        elsif ( @args == 0 ) {
+            $finished = 1;
+        }
+    }
+
+    return $params;
+}
+
+sub check_source_file {
+
+    my ($wavfile) = @_;
+    if ( !-e $wavfile ) {
+        exit_with_error("No such wavfile: $wavfile");
+    }
+    elsif ( !-r $wavfile ) {
+        exit_with_error("Wavfile not readable: $wavfile");
+    }
+    elsif ( !-s $wavfile ) {
+        exit_with_error("Zero sized wavfile: $wavfile");
+    }
+
+    return;
+}
+
+sub exit_with_error {
+
+    my ($error) = @_;
+    print "$error\n";
+    exit(1);
+}
+
+sub convert_audio_file {
+
+    my (@exec_args) = @_;
+
+    system(@exec_args);
+
+    if ( $CHILD_ERROR == -1 ) {
+        exit_with_error("failed to execute afconvert: $!");
+    }
+    elsif ( $CHILD_ERROR & 127 ) {
+        my $msg = sprintf "child died with signal %d, %s coredump",
+            ( $CHILD_ERROR & 127 ), ( $CHILD_ERROR & 128 ) ? 'with' : 'without';
+        exit_with_error($msg);
+    }
+    else {
+        my $child_exit_status = $CHILD_ERROR >> 8;
+        if ( $child_exit_status != 0 ) {
+            my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
+            exit_with_error($msg);
+        }
+    }
+
+    return;
+}
+
+sub get_soundcheck_info {
+
+    my (@exec_args) = @_;
+
+    ## no critic (InputOutput::ProhibitBacktickOperators)
+    my $soundcheck_text = qx/@exec_args 2>&1/;
+    ## use critic
+
+    if ( $CHILD_ERROR == -1 ) {
+        exit_with_error("failed to execute afinfo: $!");
+    }
+    elsif ( $CHILD_ERROR & 127 ) {
+        my $msg = sprintf "child died with signal %d, %s coredump",
+            ( $CHILD_ERROR & 127 ), ( $CHILD_ERROR & 128 ) ? 'with' : 'without';
+        exit_with_error($msg);
+    }
+    else {
+        my $child_exit_status = $CHILD_ERROR >> 8;
+        if ( $child_exit_status != 0 ) {
+            print "$soundcheck_text\n";
+            my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
+            exit_with_error($msg);
+        }
+    }
+
+    return $soundcheck_text;
+}
+
+sub verify_2channels {
+
+    my ($soundcheck_info) = @_;
+    if (
+        # there's a line in the text containing the numbere of channels:
+        # Data format:     2 ch,  48000 Hz, lpcm (0x0000000C) 24-bit little-endian signed integer
+        # Extract the number and verify that it is 2.
+        $soundcheck_info =~ m/
+            Data\sformat:\s+([0-9]+)\sch,
+        /x
+        )
+    {
+        my $channels = $1;
+        if ( $channels == 2 ) {
+            return;
+        }
+        else {
+            exit_with_error("Only 2 channels are supported. (Got $channels)");
+        }
+    }
+    exit_with_error("Unable to determine number of audio channels");
+    return;
+}
+
+sub summarize_soundcheck_info {
+
+    my ($soundcheck_info) = @_;
+
+    my $mastering_info = {};
+
+    # $soundcheck_info is a string with embedded newlines looking like:
+    #
+    # File:           /var/folders/rr/rdfvfrcs4hx9jwxtnt7xsd700000gn/T//tmpfile.premaster-info.2308425804.caf
+    # File type ID:   caff
+    # Num Tracks:     1
+    # ----
+    # Data format:     2 ch,  48000 Hz, lpcm (0x0000000C) 24-bit little-endian signed integer
+    #                 no channel layout.
+    # estimated duration: 170.880000 sec
+    # audio bytes: 49213440
+    # audio packets: 8202240
+    # bit rate: 2304000 bits per second
+    # packet size upper bound: 6
+    # maximum packet size: 6
+    # audio data file offset: 4096
+    # optimized
+    # audio 8202240 valid frames + 0 priming + 0 remainder = 8202240
+    # source bit depth: I24
+    # Loudness Info:
+    #     additional loudness parameters   :
+    #         aa noise floor master            : "-129.15 -129.03"
+    #         aa headroom master               : "0.091977 0.166341"
+    #         aa source bandwidth master       : "23063 23109"
+    #
+    #     main loudness parameters         :
+    #         aa ebu max momentary loudness    : -8.95639
+    #         aa ebu top of loudness range     : -11.55
+    #         aa itu sample peak               : -0.209812
+    #         aa itu true peak                 : -0.161641
+    #         aa ebu max short-term loudness   : -10.7634
+    #         aa ebu loudness range            : 8.4
+    #         aa itu loudness                  : -14.3081
+    #
+    #     sound check info                 :
+    #         sc ave perceived power coeff     : "760 791"
+    #         sc max perceived power coeff     : "15082 16921"
+    #         sc peak amplitude msec           : "96000 82091"
+    #         sc max perceived power msec      : "43200 43200"
+    #         sc peak amplitude                : "31985 31983"
+    #
+    #     bit depth pcm master             : 24
+    #
+    # sound check volume normalization gain: -1.69 dB
+    # ----
+
+    ## no critic qw(ProhibitCascadingIfElse RegularExpressions::RequireExtendedFormatting)
+
+    foreach my $line ( split( /\n/, $soundcheck_info ) ) {
+
+        if (
+            # Data format:     2 ch,  48000 Hz, lpcm (0x0000000C) 24-bit little-endian signed integer
+            #                  ^      ^^^^^
+            # Extract number of channels and sample rate.
+            $line =~ m/
+            ^Data\sformat:\s+
+            (\d+)\sch,\s+
+            (\d+)\s+Hz,
+        /x
+            )
+        {
+            $mastering_info->{channels}    = $1;
+            $mastering_info->{sample_rate} = int($2) / 1_000;
+        }
+        elsif (
+            #        aa noise floor master            : "-129.15 -129.03"
+            #                                            ^^^^^^^ ^^^^^^^
+            # Extract L & R noise floor, assuming 2 channels.
+            $line =~ m/
+                aa\snoise\sfloor\smaster\s+
+                :\s"
+                ([0-9-.]+)\s([0-9-.]+)"
+        /x
+            )
+        {
+            $mastering_info->{noise_floor} = [ $1, $2 ];
+        }
+        elsif (
+            #         aa itu true peak            : -0.161641
+            #                                       ^^^^^^^^^
+            $line =~ m/
+                aa\situ\strue\speak\s+
+                :\s
+                ([0-9-.]+)
+            /x
+            )
+        {
+            $mastering_info->{true_peak} = $1;
+        }
+        elsif (
+            #    aa ebu max short-term loudness   : -10.7634
+            #                                       ^^^^^^^^
+            $line =~ m/
+                aa\sebu\smax\sshort-term\sloudness\s+
+                :\s
+                ([0-9-.]+)
+            /x
+            )
+        {
+            $mastering_info->{max_short_term_lufs} = $1;
+        }
+        elsif (
+            #         aa ebu loudness range            : 8.4
+            #                                            ^^^
+            $line =~ m/
+                aa\sebu\sloudness\srange\s+
+                :\s
+                ([0-9-.]+)
+            /x
+            )
+        {
+            $mastering_info->{loudness_range} = $1;
+        }
+        elsif (
+            #         aa itu loudness                  : -14.3081
+            #                                            ^^^^^^^^
+            $line =~ m/
+                aa\situ\sloudness\s+
+                :\s
+                ([0-9-.]+)
+            /x
+            )
+        {
+            $mastering_info->{ilufs} = $1;
+        }
+        elsif (
+            #         sc peak amplitude msec           : "96000 82091"
+            #                                             ^^^^^ ^^^^^
+            $line =~ m/
+                sc\speak\samplitude\smsec\s+
+                :\s
+                "([0-9]+)\s([0-9]+)"
+            /x
+            )
+        {
+            $mastering_info->{peak_position} = [ int($1) / 1_000, int($2) / 1_000 ];
+        }
+        elsif (
+            #     bit depth pcm master             : 24
+            #                                        ^^
+            $line =~ m/
+                bit\sdepth\spcm\smaster\s+
+                :\s
+                ([0-9]+)
+            /x
+            )
+        {
+            $mastering_info->{bit_depth} = $1;
+        }
+        elsif (
+            #        sc max perceived power msec      : "43200 43200"
+            #                                            ^^^^^ ^^^^^
+            $line =~ m/
+                sc\smax\sperceived\spower\smsec\s+
+                :\s
+                "([0-9]+)\s([0-9]+)"
+            /x
+            )
+        {
+            $mastering_info->{max_power_position} = [ int($1) / 1_000, int($2) / 1_000 ];
+        }
+
+    }
+
+    ## use critic ProhibitCascadingIfElse
+
+    return $mastering_info;
+}
+
+sub add_mastering_calculations {
+
+    my ($mastering_info) = @_;
+
+    $mastering_info->{crest_factor} = $mastering_info->{ilufs} - $mastering_info->{true_peak};
+    return;
+}
+
+sub print_mastering_summary {
+
+    my ( $mastering_info, $wavfile ) = @_;
+
+    my $title_text = "Sound Check Info for $wavfile";
+    print "$title_text\n";
+    print "=" x length($title_text) . "\n\n";
+    print "Bit Depth:            $mastering_info->{bit_depth}\n";
+    print "Sample Rate:          $mastering_info->{sample_rate} kbps\n";
+    print "iLUFS:                $mastering_info->{ilufs}\n";
+    print "Max Short-term LUFS:  $mastering_info->{max_short_term_lufs}\n";
+    print "Loudness Range:       $mastering_info->{loudness_range}\n";
+    print "True Peak:            $mastering_info->{true_peak}\n";
+    print "Crest Factor:         $mastering_info->{crest_factor}\n";
+
+    print "                   Left           Right\n";
+
+    my $nf_line = sprintf( "Noise Floor:       %.2f", $mastering_info->{noise_floor}->[0] );
+    $nf_line .= " " x ( 34 - length($nf_line) );
+    $nf_line .= sprintf( "%.2f", $mastering_info->{noise_floor}->[1] );
+    print "$nf_line\n";
+
+    my $location_line = sprintf( "Peak Location:     %.2f s", $mastering_info->{peak_position}->[0] );
+    $location_line .= " " x ( 34 - length($location_line) );
+    $location_line .= sprintf( "%.2f s", $mastering_info->{peak_position}->[1] );
+    print "$location_line\n";
+
+    my $mp_line = sprintf( "Max Power Loc:     %.2f s", $mastering_info->{max_power_position}->[0] );
+    $mp_line .= " " x ( 34 - length($mp_line) );
+    $mp_line .= sprintf( "%.2f s", $mastering_info->{max_power_position}->[1] );
+    print "$mp_line\n";
+
+    return;
+}
