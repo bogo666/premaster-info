@@ -19,6 +19,7 @@
 use strict;
 use warnings;
 use English qw( -no_match_vars );
+use POSIX   qw(floor);
 
 # We restrict ourselves to only using core modules included
 # with the MacOS Perl distribution. No CPAN allowed to keep
@@ -154,7 +155,42 @@ sub exit_help {
 sub run_test_suite {
 
     print "running test suite\n";
+
+    equals_test( "00h:01m:36.03s", format_hhmmss(96.03), "format 96.03s" );
+    equals_test( "01h:01m:01.00s", format_hhmmss(3661),  "format 3661s" );
+    equals_test( "00h:02m:59.50s", format_hhmmss(179.5), "format 179.5s" );
+
     exit(0);
+}
+
+sub equals_test {
+
+    my ( $expected, $got, $testname ) = @_;
+    if ( $expected =~ m/^[0-9-.]$/ ) {
+
+        # Use numeric equality.
+
+        if ( $got == $expected ) {
+            print "ok $testname\n";
+        }
+        else {
+            print "nok $testname. Got $got, expected $expected\n";
+            exit_with_error("Failed test $testname");
+        }
+    }
+    else {
+        # Use string equality.
+
+        if ( $got eq $expected ) {
+            print "ok $testname\n";
+        }
+        else {
+            print "nok $testname. Got $got, expected $expected\n";
+            exit_with_error("Failed test $testname");
+        }
+    }
+
+    return;
 }
 
 sub process_args {
@@ -376,6 +412,18 @@ sub summarize_soundcheck_info {
             $mastering_info->{sample_rate} = int($2) / 1_000;
         }
         elsif (
+            # estimated duration: 170.880000 sec
+            #                     ^^^^^^^^^^
+            $line =~ m/
+                estimated\sduration:\s+
+                ([0-9.])
+            /x
+            )
+        {
+            $mastering_info->{length} = $1;
+        }
+
+        elsif (
             #        aa noise floor master            : "-129.15 -129.03"
             #                                            ^^^^^^^ ^^^^^^^
             # Extract L & R noise floor, assuming 2 channels.
@@ -472,6 +520,18 @@ sub summarize_soundcheck_info {
         {
             $mastering_info->{max_power_position} = [ int($1) / 1_000, int($2) / 1_000 ];
         }
+        elsif (
+            #         aa ebu max momentary loudness    : -8.95639
+            #                                            ^^^^^^^^
+            $line =~ m/
+                aa\sebu\smax\smomentary\sloudness\s+
+                :\s
+                ([0-9-.]+)
+            /x
+            )
+        {
+            $mastering_info->{max_momentary_lufs} = $1;
+        }
 
     }
 
@@ -488,6 +548,15 @@ sub add_mastering_calculations {
     return;
 }
 
+sub format_hhmmss {
+
+    my ($seconds) = @_;
+    my $hours     = floor( $seconds / 3_600 );
+    my $minutes   = floor( ( $seconds - $hours * 3600 ) / 60 );
+    my $secs      = $seconds - ( $hours * 3600 + $minutes * 60 );
+    return sprintf( "%02dh:%02dm:%05.2fs", $hours, $minutes, $secs );
+}
+
 sub print_mastering_summary {
 
     my ( $mastering_info, $wavfile ) = @_;
@@ -495,6 +564,8 @@ sub print_mastering_summary {
     my $title_text = "Sound Check Info for $wavfile";
     print "$title_text\n";
     print "=" x length($title_text) . "\n\n";
+
+    printf( "Approx Length:        %s\n", format_hhmmss( $mastering_info->{length} ) );
     print "Bit Depth:            $mastering_info->{bit_depth}\n";
     print "Sample Rate:          $mastering_info->{sample_rate} kbps\n";
     print "iLUFS:                $mastering_info->{ilufs}\n";
@@ -502,22 +573,23 @@ sub print_mastering_summary {
     print "Loudness Range:       $mastering_info->{loudness_range}\n";
     print "True Peak:            $mastering_info->{true_peak}\n";
     print "Crest Factor:         $mastering_info->{crest_factor}\n";
+    print "Max Momentary LUFS:   $mastering_info->{max_momentary_lufs}\n";
 
-    print "                   Left           Right\n";
+    print "                   Left               Right\n";
 
     my $nf_line = sprintf( "Noise Floor:       %.2f", $mastering_info->{noise_floor}->[0] );
-    $nf_line .= " " x ( 34 - length($nf_line) );
+    $nf_line .= " " x ( 38 - length($nf_line) );
     $nf_line .= sprintf( "%.2f", $mastering_info->{noise_floor}->[1] );
     print "$nf_line\n";
 
-    my $location_line = sprintf( "Peak Location:     %.2f s", $mastering_info->{peak_position}->[0] );
-    $location_line .= " " x ( 34 - length($location_line) );
-    $location_line .= sprintf( "%.2f s", $mastering_info->{peak_position}->[1] );
+    my $location_line = sprintf( "Peak Location:     %s", format_hhmmss( $mastering_info->{peak_position}->[0] ) );
+    $location_line .= " " x ( 38 - length($location_line) );
+    $location_line .= format_hhmmss( $mastering_info->{peak_position}->[1] );
     print "$location_line\n";
 
-    my $mp_line = sprintf( "Max Power Loc:     %.2f s", $mastering_info->{max_power_position}->[0] );
-    $mp_line .= " " x ( 34 - length($mp_line) );
-    $mp_line .= sprintf( "%.2f s", $mastering_info->{max_power_position}->[1] );
+    my $mp_line = sprintf( "Max Power Loc:     %s", format_hhmmss( $mastering_info->{max_power_position}->[0] ) );
+    $mp_line .= " " x ( 38 - length($mp_line) );
+    $mp_line .= format_hhmmss( $mastering_info->{max_power_position}->[1] );
     print "$mp_line\n";
 
     return;
