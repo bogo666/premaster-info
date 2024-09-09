@@ -31,7 +31,6 @@ use Data::Dumper qw(Dumper);
 # Constants
 #
 our $VERSION = '0.1';
-my $SHORT_LUFS_GOAL    = -10.0;
 my %SUFFIX_BY_FILETYPE = (
     wavfile => 'wav',
     caffile => 'caf',
@@ -42,7 +41,8 @@ my %SUFFIX_BY_FILETYPE = (
 #
 my %gTEMP = (
     tempdir              => undef,
-    tempfile             => undef,
+    wavfile              => undef,
+    caffile              => undef,
     cleanup_dir          => 0,
     peak_power_tempfiles => {
         left => {
@@ -81,16 +81,12 @@ MAIN: {
     umask(0077);    # When creating files and directories, make them accessible to the owner only.
 
     setup_tempdir();
-    check_source_file( $params->{wavfile} );
 
-    my @exec_args
-        = ( 'afconvert', $params->{wavfile}, $gTEMP{tempfile}, '-d', '0', '-f', 'caff', '--soundcheck-generate', );
+    copy_file( $params->{wavfile}, $gTEMP{wavfile} );
+    check_source_file( $gTEMP{wavfile} );
+    convert_audio_file( $gTEMP{wavfile}, $gTEMP{caffile} );
 
-    convert_audio_file(@exec_args);
-
-    @exec_args = ( 'afinfo', $gTEMP{tempfile} );
-
-    my $soundcheck_info = get_soundcheck_info(@exec_args);
+    my $soundcheck_info = get_soundcheck_info( $gTEMP{caffile} );
     verify_2channels($soundcheck_info);
     my $mastering_info = summarize_soundcheck_info($soundcheck_info);
     add_mastering_calculations($mastering_info);
@@ -107,75 +103,61 @@ MAIN: {
     );
 
     copy_peak_audio(
-        {   src      => $params->{wavfile},
+        {   src      => $gTEMP{wavfile},
             dst      => $gTEMP{peak_amp_tempfiles}->{left}->{wavfile},
             length   => $mastering_info->{length},
             position => $mastering_info->{peak_position}->[0],
         }
     );
-    @exec_args = (
-        'afconvert',
-        $gTEMP{peak_amp_tempfiles}->{left}->{wavfile},
-        $gTEMP{peak_amp_tempfiles}->{left}->{caffile},
-        '-d', '0', '-f', 'caff', '--soundcheck-generate',
-    );
 
-    my $sc_info = get_soundcheck_info(@exec_args);
-    print "SC_INFO: $sc_info\n";    # TEMP
-    my $info = summarize_soundcheck_info($sc_info);
-    print Dumper($info) . "\n";     # TEMP
-    $peak_info{peak_amp}->{left} = $info;
-
-    # $peak_info{peak_amp}->{left} = summarize_soundcheck_info( get_soundcheck_info(@exec_args) );
+    convert_audio_file( $gTEMP{peak_amp_tempfiles}->{left}->{wavfile}, $gTEMP{peak_amp_tempfiles}->{left}->{caffile}, );
+    my $sc_info = get_soundcheck_info( $gTEMP{peak_amp_tempfiles}->{left}->{caffile} );
+    $peak_info{peak_amp}->{left} = summarize_soundcheck_info($sc_info);
 
     copy_peak_audio(
-        {   src      => $params->{wavfile},
+        {   src      => $gTEMP{wavfile},
             dst      => $gTEMP{peak_amp_tempfiles}->{right}->{wavfile},
             length   => $mastering_info->{length},
             position => $mastering_info->{peak_position}->[1],
         }
     );
-    @exec_args = (
-        'afconvert',
+
+    convert_audio_file(
         $gTEMP{peak_amp_tempfiles}->{right}->{wavfile},
         $gTEMP{peak_amp_tempfiles}->{right}->{caffile},
-        '-d', '0', '-f', 'caff', '--soundcheck-generate',
     );
-
-    $peak_info{peak_amp}->{right} = summarize_soundcheck_info( get_soundcheck_info(@exec_args) );
+    $sc_info = get_soundcheck_info( $gTEMP{peak_amp_tempfiles}->{right}->{caffile} );
+    $peak_info{peak_amp}->{right} = summarize_soundcheck_info($sc_info);
 
     copy_peak_audio(
-        {   src      => $params->{wavfile},
+        {   src      => $gTEMP{wavfile},
             dst      => $gTEMP{peak_power_tempfiles}->{left}->{wavfile},
             length   => $mastering_info->{length},
             position => $mastering_info->{max_power_position}->[0],
         }
     );
-    @exec_args = (
-        'afconvert',
+
+    convert_audio_file(
         $gTEMP{peak_power_tempfiles}->{left}->{wavfile},
         $gTEMP{peak_power_tempfiles}->{left}->{caffile},
-        '-d', '0', '-f', 'caff', '--soundcheck-generate',
     );
-
-    $peak_info{peak_power}->{left} = summarize_soundcheck_info( get_soundcheck_info(@exec_args) );
+    $sc_info = get_soundcheck_info( $gTEMP{peak_power_tempfiles}->{left}->{caffile} );
+    $peak_info{peak_power}->{left} = summarize_soundcheck_info($sc_info);
 
     copy_peak_audio(
-        {   src      => $params->{wavfile},
+        {   src      => $gTEMP{wavfile},
             dst      => $gTEMP{peak_power_tempfiles}->{right}->{wavfile},
             length   => $mastering_info->{length},
             position => $mastering_info->{max_power_position}->[1],
         }
     );
 
-    @exec_args = (
-        'afconvert',
+    convert_audio_file(
         $gTEMP{peak_power_tempfiles}->{right}->{wavfile},
         $gTEMP{peak_power_tempfiles}->{right}->{caffile},
-        '-d', '0', '-f', 'caff', '--soundcheck-generate',
     );
-
-    $peak_info{peak_power}->{right} = summarize_soundcheck_info( get_soundcheck_info(@exec_args) );
+    $sc_info = get_soundcheck_info( $gTEMP{peak_power_tempfiles}->{right}->{caffile} );
+    $peak_info{peak_power}->{right} = summarize_soundcheck_info($sc_info);
 
     print_mastering_summary( $mastering_info, $params->{wavfile} );
     print_peak_summary( "Peak Amplitude", $peak_info{peak_amp}->{left},   $peak_info{peak_amp}->{right} );
@@ -183,12 +165,14 @@ MAIN: {
 }
 
 END {
-    # Remove tempfile if needed.
-    if ( $gTEMP{tempfile} && -e $gTEMP{tempfile} && -f $gTEMP{tempfile} ) {
-        if ( !unlink( $gTEMP{tempfile} ) ) {
-            ## no critic (ErrorHandling::RequireCarping)
-            die "Unable to remove tempfile $gTEMP{tempfile}: $!";
-            ## use critic
+    # Remove tempfiles if needed.
+    foreach my $filetype (qw/wavfile caffile/) {
+        if ( $gTEMP{$filetype} && -e $gTEMP{$filetype} && -f $gTEMP{$filetype} ) {
+            if ( !unlink( $gTEMP{$filetype} ) ) {
+                ## no critic (ErrorHandling::RequireCarping)
+                die "Unable to remove tempfile $gTEMP{$filetype}: $!";
+                ## use critic
+            }
         }
     }
 
@@ -258,7 +242,8 @@ sub setup_tempdir {
 
     SETUP_TEMPFILES: {
 
-        $gTEMP{tempfile} = create_tempfile( $gTEMP{tempdir}, 'caf' );
+        $gTEMP{wavfile} = create_tempfile( $gTEMP{tempdir}, 'wav' );
+        $gTEMP{caffile} = create_tempfile( $gTEMP{tempdir}, 'caf' );
 
         foreach my $channel (qw/left right/) {
 
@@ -343,6 +328,25 @@ sub equals_test {
     return;
 }
 
+sub copy_file {
+
+    my ( $src_filepath, $dst_filepath ) = @_;
+    open( my $src_fp, '<:raw', $src_filepath ) or die "Unable to open $src_filepath for reading: $!";
+    open( my $dst_fp, '>:raw', $dst_filepath ) or die "Unable to open $dst_filepath for writing: $!";
+
+    my $bufsize = 4096;
+    my ( $len, $data );
+
+    while ( $len = sysread( $src_fp, $data, $bufsize ) ) {
+        my $bytes = syswrite( $dst_fp, $data, $len );
+        die "Unable to write to tempfile $dst_filepath: $!"      unless defined $bytes;
+        die "Short write when writing to tempfile $dst_filepath" unless $bytes == $len;
+    }
+
+    close($dst_fp);
+    close($src_fp);
+}
+
 sub process_args {
 
     my (@args) = @_;
@@ -417,60 +421,50 @@ sub exit_with_error {
 
 sub convert_audio_file {
 
-    my (@exec_args) = @_;
+    my ( $src_wavfile, $dst_caffile ) = @_;
 
-    ## no critic (InputOutput::ProhibitBacktickOperators)
-    my $output = qx/@exec_args 2>&1/;
-    ## use critic
-
-    print "OUTPUT: $output\n";    # TEMP
-
-    if ( $CHILD_ERROR == -1 ) {
-        exit_with_error("failed to execute afconvert: $!");
-    }
-    elsif ( $CHILD_ERROR & 127 ) {
-        my $msg = sprintf "child died with signal %d, %s coredump",
-            ( $CHILD_ERROR & 127 ), ( $CHILD_ERROR & 128 ) ? 'with' : 'without';
-        exit_with_error($msg);
-    }
-    else {
-        my $child_exit_status = $CHILD_ERROR >> 8;
-        if ( $child_exit_status != 0 ) {
-            print "output\n";
-            my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
-            exit_with_error($msg);
-        }
-    }
+    my @exec_args = ( 'afconvert', $src_wavfile, $dst_caffile, '-d', '0', '-f', 'caff', '--soundcheck-generate' );
+    execute_binary_with_capture(@exec_args);
 
     return;
 }
 
-sub get_soundcheck_info {
+sub execute_binary_with_capture {
 
     my (@exec_args) = @_;
 
+    my $progname = $exec_args[0];
+
     ## no critic (InputOutput::ProhibitBacktickOperators)
-    my $soundcheck_text = qx/@exec_args 2>&1/;
+    my $text = qx/@exec_args 2>&1/;
     ## use critic
 
     if ( $CHILD_ERROR == -1 ) {
-        exit_with_error("failed to execute afinfo: $!");
+        exit_with_error("failed to execute $progname: $!");
     }
     elsif ( $CHILD_ERROR & 127 ) {
-        my $msg = sprintf "child died with signal %d, %s coredump",
+        my $msg = sprintf "process died with signal %d, %s coredump",
             ( $CHILD_ERROR & 127 ), ( $CHILD_ERROR & 128 ) ? 'with' : 'without';
         exit_with_error($msg);
     }
     else {
         my $child_exit_status = $CHILD_ERROR >> 8;
         if ( $child_exit_status != 0 ) {
-            print "$soundcheck_text\n";
+            print "$text\n";
             my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
             exit_with_error($msg);
         }
     }
 
-    return $soundcheck_text;
+    return $text;
+}
+
+sub get_soundcheck_info {
+
+    my ($caffile) = @_;
+
+    my @exec_args = ( 'afinfo', $caffile );
+    return execute_binary_with_capture(@exec_args);
 }
 
 sub verify_2channels {
@@ -764,7 +758,7 @@ sub print_peak_summary {
     my ( $title, $info_left, $info_right ) = @_;
     print "$title\n";
     print "=" x length($title);
-    print Dumper($info_left) . "\n";
+    print "\n";
     print "LEFT    True Peak:   $info_left->{true_peak}\n";
     print "        Max ST LUFS: $info_left->{max_short_term_lufs}\n";
     print "RIGHT   True Peak:   $info_right->{true_peak}\n";
@@ -790,30 +784,7 @@ sub copy_peak_audio {
     my $end_time   = format_hhmmss( $args->{position}, 1 );
 
     my @exec_args = ( 'sox', $args->{src}, $args->{dst}, 'trim', $start_time, "=$end_time", );
-    print "exec args: @exec_args\n";              # TEMP
-
-    ## no critic (InputOutput::ProhibitBacktickOperators)
-    my $copy_info = qx/@exec_args 2>&1/;
-    ## use critic
-
-    print "COPY_INFO: $copy_info\n";              # TEMP
-
-    if ( $CHILD_ERROR == -1 ) {
-        exit_with_error("failed to execute sox: $!");
-    }
-    elsif ( $CHILD_ERROR & 127 ) {
-        my $msg = sprintf "child died with signal %d, %s coredump",
-            ( $CHILD_ERROR & 127 ), ( $CHILD_ERROR & 128 ) ? 'with' : 'without';
-        exit_with_error($msg);
-    }
-    else {
-        my $child_exit_status = $CHILD_ERROR >> 8;
-        if ( $child_exit_status != 0 ) {
-            print "$copy_info\n";
-            my $msg = sprintf "child exited with value %d", $CHILD_ERROR >> 8;
-            exit_with_error($msg);
-        }
-    }
+    execute_binary_with_capture(@exec_args);
 
     return;
 }
