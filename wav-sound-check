@@ -23,16 +23,10 @@ use POSIX   qw(floor);
 # with the MacOS Perl distribution. No CPAN allowed to keep
 # this script dependency free!
 
-use Data::Dumper qw(Dumper);
-
 #
 # Constants
 #
 our $VERSION = '0.1';
-my %SUFFIX_BY_FILETYPE = (
-    wavfile => 'wav',
-    caffile => 'caf',
-);
 
 #
 # Globals
