@@ -283,20 +283,27 @@ sub convert_audio_file {
 sub copy_file {
 
     my ( $src_filepath, $dst_filepath ) = @_;
+
+    ## no critic (InputOutput::RequireBriefOpen, ErrorHandling::RequireCarping)
     open( my $src_fp, '<:raw', $src_filepath ) or die "Unable to open $src_filepath for reading: $!";
     open( my $dst_fp, '>:raw', $dst_filepath ) or die "Unable to open $dst_filepath for writing: $!";
+    ## use critic
 
     my $bufsize = 4096;
     my ( $len, $data );
 
     while ( $len = sysread( $src_fp, $data, $bufsize ) ) {
+
         my $bytes = syswrite( $dst_fp, $data, $len );
+        ## no critic (ErrorHandling::RequireCarping)
         die "Unable to write to tempfile $dst_filepath: $!"      unless defined $bytes;
         die "Short write when writing to tempfile $dst_filepath" unless $bytes == $len;
+        ## use critic
     }
 
     close($dst_fp);
     close($src_fp);
+    return;
 }
 
 sub execute_binary_with_capture {
