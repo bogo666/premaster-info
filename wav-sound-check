@@ -1,12 +1,10 @@
 #!/usr/bin/env perl
 
-# premaster-info.pl script.
+# wav-sound-check script.
 #
 # Using the Apple Digital Masters tools afconvert & afinfo,
-# produce Apple Music "sound check" info and convert the output
-# into a summary useful for Audio Mastering Engineers, including:
-# crest factor, loudness increase target, loudness range, and L & R
-# peak locations in seconds.
+# produce Apple Music sound check info and convert the output
+# into a summary useful for Audio Mastering Engineers.
 #
 # Info about Apple Digital Masters is available here:
 #     https://www.apple.com/apple-music/apple-digital-masters/
@@ -40,30 +38,10 @@ my %SUFFIX_BY_FILETYPE = (
 # Globals
 #
 my %gTEMP = (
-    tempdir              => undef,
-    wavfile              => undef,
-    caffile              => undef,
-    cleanup_dir          => 0,
-    peak_power_tempfiles => {
-        left => {
-            wavfile => undef,
-            caffile => undef,
-        },
-        right => {
-            wavfile => undef,
-            caffile => undef,
-        },
-    },
-    peak_amp_tempfiles => {
-        left => {
-            wavfile => undef,
-            caffile => undef,
-        },
-        right => {
-            wavfile => undef,
-            caffile => undef,
-        },
-    },
+    tempdir     => undef,
+    wavfile     => undef,
+    caffile     => undef,
+    cleanup_dir => 0,
 );
 
 MAIN: {
@@ -82,8 +60,8 @@ MAIN: {
 
     setup_tempdir();
 
+    check_source_file( $params->{wavfile} );
     copy_file( $params->{wavfile}, $gTEMP{wavfile} );
-    check_source_file( $gTEMP{wavfile} );
     convert_audio_file( $gTEMP{wavfile}, $gTEMP{caffile} );
 
     my $soundcheck_info = get_soundcheck_info( $gTEMP{caffile} );
@@ -91,77 +69,7 @@ MAIN: {
     my $mastering_info = summarize_soundcheck_info($soundcheck_info);
     add_mastering_calculations($mastering_info);
 
-    my %peak_info = (
-        peak_amp => {
-            left  => undef,
-            right => undef,
-        },
-        peak_power => {
-            left  => undef,
-            right => undef,
-        },
-    );
-
-    copy_peak_audio(
-        {   src      => $gTEMP{wavfile},
-            dst      => $gTEMP{peak_amp_tempfiles}->{left}->{wavfile},
-            length   => $mastering_info->{length},
-            position => $mastering_info->{peak_position}->[0],
-        }
-    );
-
-    convert_audio_file( $gTEMP{peak_amp_tempfiles}->{left}->{wavfile}, $gTEMP{peak_amp_tempfiles}->{left}->{caffile}, );
-    my $sc_info = get_soundcheck_info( $gTEMP{peak_amp_tempfiles}->{left}->{caffile} );
-    $peak_info{peak_amp}->{left} = summarize_soundcheck_info($sc_info);
-
-    copy_peak_audio(
-        {   src      => $gTEMP{wavfile},
-            dst      => $gTEMP{peak_amp_tempfiles}->{right}->{wavfile},
-            length   => $mastering_info->{length},
-            position => $mastering_info->{peak_position}->[1],
-        }
-    );
-
-    convert_audio_file(
-        $gTEMP{peak_amp_tempfiles}->{right}->{wavfile},
-        $gTEMP{peak_amp_tempfiles}->{right}->{caffile},
-    );
-    $sc_info = get_soundcheck_info( $gTEMP{peak_amp_tempfiles}->{right}->{caffile} );
-    $peak_info{peak_amp}->{right} = summarize_soundcheck_info($sc_info);
-
-    copy_peak_audio(
-        {   src      => $gTEMP{wavfile},
-            dst      => $gTEMP{peak_power_tempfiles}->{left}->{wavfile},
-            length   => $mastering_info->{length},
-            position => $mastering_info->{max_power_position}->[0],
-        }
-    );
-
-    convert_audio_file(
-        $gTEMP{peak_power_tempfiles}->{left}->{wavfile},
-        $gTEMP{peak_power_tempfiles}->{left}->{caffile},
-    );
-    $sc_info = get_soundcheck_info( $gTEMP{peak_power_tempfiles}->{left}->{caffile} );
-    $peak_info{peak_power}->{left} = summarize_soundcheck_info($sc_info);
-
-    copy_peak_audio(
-        {   src      => $gTEMP{wavfile},
-            dst      => $gTEMP{peak_power_tempfiles}->{right}->{wavfile},
-            length   => $mastering_info->{length},
-            position => $mastering_info->{max_power_position}->[1],
-        }
-    );
-
-    convert_audio_file(
-        $gTEMP{peak_power_tempfiles}->{right}->{wavfile},
-        $gTEMP{peak_power_tempfiles}->{right}->{caffile},
-    );
-    $sc_info = get_soundcheck_info( $gTEMP{peak_power_tempfiles}->{right}->{caffile} );
-    $peak_info{peak_power}->{right} = summarize_soundcheck_info($sc_info);
-
     print_mastering_summary( $mastering_info, $params->{wavfile} );
-    print_peak_summary( "Peak Amplitude", $peak_info{peak_amp}->{left},   $peak_info{peak_amp}->{right} );
-    print_peak_summary( "Peak Power",     $peak_info{peak_power}->{left}, $peak_info{peak_power}->{right} );
 }
 
 END {
@@ -172,30 +80,6 @@ END {
                 ## no critic (ErrorHandling::RequireCarping)
                 die "Unable to remove tempfile $gTEMP{$filetype}: $!";
                 ## use critic
-            }
-        }
-    }
-
-    # Remove peak power/amp tempfiles if needed.
-    foreach my $channel (qw/left right/) {
-
-        foreach my $filetype (qw/wavfile caffile/) {
-            my $filepath = $gTEMP{peak_power_tempfiles}->{$channel}->{$filetype};
-            if ( $filepath && -e $filepath && -f $filepath ) {
-                if ( !unlink($filepath) ) {
-                    ## no critic (ErrorHandling::RequireCarping)
-                    die "Unable to remove peak_power->${channel}->${filetype} tempfile $filepath: $!";
-                    ## use critic
-                }
-            }
-
-            $filepath = $gTEMP{peak_amp_tempfiles}->{$channel}->{$filetype};
-            if ( $filepath && -e $filepath && -f $filepath ) {
-                if ( !unlink($filepath) ) {
-                    ## no critic (ErrorHandling::RequireCarping)
-                    die "Unable to remove peak_amp->${channel}->${filetype} tempfile $filepath: $!";
-                    ## use critic
-                }
             }
         }
     }
@@ -219,7 +103,7 @@ sub setup_tempdir {
         }
         elsif ( -d '/var/tmp' && -w '/var/tmp' ) {
             my $rand_num = int( rand( 2**32 ) );
-            my $tempdir  = "/var/tmp/tmpdir.premaster-info.$rand_num";
+            my $tempdir  = "/var/tmp/tmpdir.wav-sound-check.$rand_num";
             if ( !mkdir( $tempdir, 0700 ) ) {
                 exit_with_error("Unable to create temporary directory $tempdir: $!");
             }
@@ -228,7 +112,7 @@ sub setup_tempdir {
         }
         elsif ( -d '/tmp' && -w '/tmp' ) {
             my $rand_num = int( rand( 2**32 ) );
-            my $tempdir  = "/tmp/tmpdir.premaster-info.$rand_num";
+            my $tempdir  = "/tmp/tmpdir.wav-sound-check.$rand_num";
             if ( !mkdir( $tempdir, 0700 ) ) {
                 exit_with_error("Unable to create temporary directory $tempdir: $!");
             }
@@ -244,17 +128,6 @@ sub setup_tempdir {
 
         $gTEMP{wavfile} = create_tempfile( $gTEMP{tempdir}, 'wav' );
         $gTEMP{caffile} = create_tempfile( $gTEMP{tempdir}, 'caf' );
-
-        foreach my $channel (qw/left right/) {
-
-            foreach my $filetype ( keys %SUFFIX_BY_FILETYPE ) {
-
-                $gTEMP{peak_power_tempfiles}->{$channel}->{$filetype}
-                    = create_tempfile( $gTEMP{tempdir}, $SUFFIX_BY_FILETYPE{$filetype} );
-                $gTEMP{peak_amp_tempfiles}->{$channel}->{$filetype}
-                    = create_tempfile( $gTEMP{tempdir}, $SUFFIX_BY_FILETYPE{$filetype} );
-            }
-        }
     }
 
     return;
@@ -264,7 +137,7 @@ sub create_tempfile {
 
     my ( $tempdir, $suffix ) = @_;
     my $rand_num = int( rand( 2**32 ) );
-    return "$tempdir/tmpfile.premaster-info.$rand_num.$suffix";
+    return "$tempdir/tmpfile.wav-sound-check.$rand_num.$suffix";
 }
 
 sub abort_if_root {
@@ -301,7 +174,10 @@ sub run_test_suite {
 sub equals_test {
 
     my ( $expected, $got, $testname ) = @_;
+
+    ## no critic (RegularExpressions::RequireExtendedFormatting)
     if ( $expected =~ m/^[0-9-.]$/ ) {
+        ## use critic
 
         # Use numeric equality.
 
@@ -326,25 +202,6 @@ sub equals_test {
     }
 
     return;
-}
-
-sub copy_file {
-
-    my ( $src_filepath, $dst_filepath ) = @_;
-    open( my $src_fp, '<:raw', $src_filepath ) or die "Unable to open $src_filepath for reading: $!";
-    open( my $dst_fp, '>:raw', $dst_filepath ) or die "Unable to open $dst_filepath for writing: $!";
-
-    my $bufsize = 4096;
-    my ( $len, $data );
-
-    while ( $len = sysread( $src_fp, $data, $bufsize ) ) {
-        my $bytes = syswrite( $dst_fp, $data, $len );
-        die "Unable to write to tempfile $dst_filepath: $!"      unless defined $bytes;
-        die "Short write when writing to tempfile $dst_filepath" unless $bytes == $len;
-    }
-
-    close($dst_fp);
-    close($src_fp);
 }
 
 sub process_args {
@@ -429,6 +286,25 @@ sub convert_audio_file {
     return;
 }
 
+sub copy_file {
+
+    my ( $src_filepath, $dst_filepath ) = @_;
+    open( my $src_fp, '<:raw', $src_filepath ) or die "Unable to open $src_filepath for reading: $!";
+    open( my $dst_fp, '>:raw', $dst_filepath ) or die "Unable to open $dst_filepath for writing: $!";
+
+    my $bufsize = 4096;
+    my ( $len, $data );
+
+    while ( $len = sysread( $src_fp, $data, $bufsize ) ) {
+        my $bytes = syswrite( $dst_fp, $data, $len );
+        die "Unable to write to tempfile $dst_filepath: $!"      unless defined $bytes;
+        die "Short write when writing to tempfile $dst_filepath" unless $bytes == $len;
+    }
+
+    close($dst_fp);
+    close($src_fp);
+}
+
 sub execute_binary_with_capture {
 
     my (@exec_args) = @_;
@@ -470,6 +346,7 @@ sub get_soundcheck_info {
 sub verify_2channels {
 
     my ($soundcheck_info) = @_;
+
     if (
         # there's a line in the text containing the numbere of channels:
         # Data format:     2 ch,  48000 Hz, lpcm (0x0000000C) 24-bit little-endian signed integer
@@ -634,18 +511,6 @@ sub summarize_soundcheck_info {
             $mastering_info->{ilufs} = $1;
         }
         elsif (
-            #         sc peak amplitude msec           : "96000 82091"
-            #                                             ^^^^^ ^^^^^
-            $line =~ m/
-                sc\speak\samplitude\smsec\s+
-                :\s
-                "([0-9]+)\s([0-9]+)"
-            /x
-            )
-        {
-            $mastering_info->{peak_position} = [ int($1) / 1_000, int($2) / 1_000 ];
-        }
-        elsif (
             #     bit depth pcm master             : 24
             #                                        ^^
             $line =~ m/
@@ -658,16 +523,16 @@ sub summarize_soundcheck_info {
             $mastering_info->{bit_depth} = $1;
         }
         elsif (
-            #        sc max perceived power msec      : "43200 43200"
-            #                                            ^^^^^ ^^^^^
+            # sound check volume normalization gain: -1.69 dB
+            #                                        ^^^^^
             $line =~ m/
-                sc\smax\sperceived\spower\smsec\s+
-                :\s
-                "([0-9]+)\s([0-9]+)"
+                sound\scheck\svolume\snormalization\sgain:
+                \s
+                ([0-9-.]+)
             /x
             )
         {
-            $mastering_info->{max_power_position} = [ int($1) / 1_000, int($2) / 1_000 ];
+            $mastering_info->{sound_check_normalization_gain} = $1;
         }
         elsif (
             #         aa ebu max momentary loudness    : -8.95639
@@ -723,68 +588,23 @@ sub print_mastering_summary {
     print "$title_text\n";
     print "=" x length($title_text) . "\n\n";
 
-    printf( "Approx Length:        %s\n", format_hhmmss( $mastering_info->{length} ) );
-    print "Bit Depth:            $mastering_info->{bit_depth}\n";
-    print "Sample Rate:          $mastering_info->{sample_rate} kbps\n";
-    print "iLUFS:                $mastering_info->{ilufs}\n";
-    print "Max Short-term LUFS:  $mastering_info->{max_short_term_lufs}\n";
-    print "Loudness Range:       $mastering_info->{loudness_range}\n";
-    print "True Peak:            $mastering_info->{true_peak}\n";
-    print "Crest Factor:         $mastering_info->{crest_factor}\n";
-    print "Max Momentary LUFS:   $mastering_info->{max_momentary_lufs}\n";
+    printf( "Approx Length:          %s\n", format_hhmmss( $mastering_info->{length} ) );
+    print "Bit Depth:              $mastering_info->{bit_depth}\n";
+    print "Sample Rate:            $mastering_info->{sample_rate} kbps\n";
+    print "Loudness iLUFS:         $mastering_info->{ilufs}\n";
+    print "Max Short-term LUFS:    $mastering_info->{max_short_term_lufs}\n";
+    print "Loudness Range:         $mastering_info->{loudness_range}\n";
+    print "True Peak:              $mastering_info->{true_peak}\n";
+    print "Crest Factor:           $mastering_info->{crest_factor}\n";
+    print "Max Momentary LUFS:     $mastering_info->{max_momentary_lufs}\n";
+    print "Sound Check Norm Gain:  $mastering_info->{sound_check_normalization_gain}\n\n";
 
-    print "                   Left               Right\n";
+    print "                     Left               Right\n";
 
-    my $nf_line = sprintf( "Noise Floor:       %.2f", $mastering_info->{noise_floor}->[0] );
-    $nf_line .= " " x ( 38 - length($nf_line) );
+    my $nf_line = sprintf( "Noise Floor:         %.2f", $mastering_info->{noise_floor}->[0] );
+    $nf_line .= " " x ( 40 - length($nf_line) );
     $nf_line .= sprintf( "%.2f", $mastering_info->{noise_floor}->[1] );
-    print "$nf_line\n";
-
-    my $location_line = sprintf( "Peak Location:     %s", format_hhmmss( $mastering_info->{peak_position}->[0] ) );
-    $location_line .= " " x ( 38 - length($location_line) );
-    $location_line .= format_hhmmss( $mastering_info->{peak_position}->[1] );
-    print "$location_line\n";
-
-    my $mp_line = sprintf( "Max Power Loc:     %s", format_hhmmss( $mastering_info->{max_power_position}->[0] ) );
-    $mp_line .= " " x ( 38 - length($mp_line) );
-    $mp_line .= format_hhmmss( $mastering_info->{max_power_position}->[1] );
-    print "$mp_line\n\n";
-
-    return;
-}
-
-sub print_peak_summary {
-
-    my ( $title, $info_left, $info_right ) = @_;
-    print "$title\n";
-    print "=" x length($title);
-    print "\n";
-    print "LEFT    True Peak:   $info_left->{true_peak}\n";
-    print "        Max ST LUFS: $info_left->{max_short_term_lufs}\n";
-    print "RIGHT   True Peak:   $info_right->{true_peak}\n";
-    print "        Max ST LUFS: $info_right->{max_short_term_lufs}\n";
-}
-
-sub copy_peak_audio {
-
-    my ($args) = @_;
-    die "Bad args" unless ref($args) eq 'HASH';
-
-    my @keys = qw(src dst length position);
-    foreach my $key (@keys) {
-
-        if ( !exists $args->{$key} ) {
-            die "Args missing key $key";
-        }
-    }
-
-    my $start_seconds = $args->{position} - 3;    # 3 seconds earlier than the peak.
-    $start_seconds = 0 unless $start_seconds > 0;
-    my $start_time = format_hhmmss( $start_seconds,    1 );
-    my $end_time   = format_hhmmss( $args->{position}, 1 );
-
-    my @exec_args = ( 'sox', $args->{src}, $args->{dst}, 'trim', $start_time, "=$end_time", );
-    execute_binary_with_capture(@exec_args);
+    print "$nf_line\n\n";
 
     return;
 }
